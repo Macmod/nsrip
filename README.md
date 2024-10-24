@@ -16,11 +16,13 @@ $ ./nsrip -d <targetdomain>
 # Flags
 
 ```
-  -d, --domain string     Specify the target domain
-  -l, --list string       Specify a file with a list of target domains
-  -p, --provider string   Specify the nameserver list to use (aws, azure, gcp, cloud, or the path to a custom file) (default "cloud")
-  -q, --quiet             Only output raw results
-  -w, --workers int       Specify the number of workers (default 5)
+Usage of ./nsrip:
+  -d, --domain string        Specify the target domain
+  -l, --list string          Specify a file with a list of target domains
+  -n, --nameservers string   Specify the nameserver list to use (aws, azure, gcp, cloud, or the path to a custom file) (default "cloud")
+  -q, --quiet                Only output raw results
+  -v, --verbose              Verbose mode
+  -w, --workers int          Specify the number of workers (default 10)
 ```
 
 # License

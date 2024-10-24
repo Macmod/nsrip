@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fatih/color"
@@ -21,6 +22,9 @@ var validProviders = map[string][]string{
 	"gcp":   []string{"nslists/gcp.txt"},
 	"cloud": []string{"nslists/aws.txt", "nslists/azure.txt", "nslists/gcp.txt"},
 }
+
+var progress int32
+var total int32
 
 func queryDNS(domain string, nameserver string) (*dns.Msg, error) {
 	c := new(dns.Client)
@@ -41,16 +45,16 @@ func queryDNS(domain string, nameserver string) (*dns.Msg, error) {
 }
 
 func main() {
-	banner := `
-                                  _                       
-                                 (_)                      
-  _ __   __ _ _ __ ___   ___ _ __ _ _ __  _ __   ___ _ __ 
- | '_ \ / _` + "`" + ` | '_ ` + "`" + ` _ \ / _ \ '__| | '_ \| '_ \ / _ \ '__|
- | | | | (_| | | | | | |  __/ |  | | |_) | |_) |  __/ |   
- |_| |_|\__,_|_| |_| |_|\___|_|  |_| .__/| .__/ \___|_|   
-                                   | |   | |              
-                                   |_|   |_|              
+	banner := `                 _
+                (_)
+  _ __  ___ _ __ _ _ __
+ | '_ \/ __| '__| | '_ \
+ | | | \__ \ |  | | |_) |
+ |_| |_|___/_|  |_| .__/
+                  | |
+                  |_|
 	`
+	version := "1.0.1"
 
 	var cloudProvider string
 	var domain string
@@ -58,21 +62,24 @@ func main() {
 	var numWorkers int
 	var nameservers []string
 	var quietMode bool
+	var verboseMode bool
 
 	green := color.New(color.FgGreen)
-	//red := color.New(color.FgRed)
 	yellow := color.New(color.FgYellow)
+	red := color.New(color.FgRed)
 
 	pflag.StringVarP(&domain, "domain", "d", "", "Specify the target domain")
 	pflag.StringVarP(&domainsFile, "list", "l", "", "Specify a file with a list of target domains")
-	pflag.StringVarP(&cloudProvider, "provider", "p", "cloud", "Specify the nameserver list to use (aws, azure, gcp, cloud, or the path to a custom file)")
-	pflag.IntVarP(&numWorkers, "workers", "w", 5, "Specify the number of workers")
+	pflag.StringVarP(&cloudProvider, "nameservers", "n", "cloud", "Specify the nameserver list to use (aws, azure, gcp, cloud, or the path to a custom file)")
+	pflag.IntVarP(&numWorkers, "workers", "w", 10, "Specify the number of workers")
 	pflag.BoolVarP(&quietMode, "quiet", "q", false, "Only output raw results")
+	pflag.BoolVarP(&verboseMode, "verbose", "v", false, "Verbose mode")
 
 	pflag.Parse()
 
 	if !quietMode {
 		fmt.Println(banner)
+		fmt.Printf("[v%s]\n\n", version)
 	}
 
 	providerLists, ok := validProviders[cloudProvider]
@@ -129,11 +136,34 @@ func main() {
 
 	numNameservers := len(nameservers)
 	numDomains := len(domainsList)
+	sampleSize := numDomains * numNameservers
 
 	if !quietMode {
-		fmt.Printf("[+] %d domains x %d nameservers = %d queries\n", numDomains, numNameservers, numDomains*numNameservers)
+		fmt.Printf("[+] %d domains x %d nameservers = %d queries\n", numDomains, numNameservers, sampleSize)
 		fmt.Printf("[+] Workers: %d\n", numWorkers)
 		fmt.Printf("[~] Mapping IPs for nameservers\n")
+		fmt.Printf("[~] Press enter at any time to check the progress\n")
+	}
+
+	if !quietMode {
+		go func() {
+			reader := bufio.NewReader(os.Stdin)
+
+			for {
+				_, err := reader.ReadString('\n')
+				if err != nil {
+					continue
+				}
+
+				val1 := atomic.LoadInt32(&progress)
+				val2 := atomic.LoadInt32(&total)
+				fmt.Printf(
+					"[~] Progress: %d/%d (%.2f%%)\n",
+					val1, val2,
+					float64(val1)*100/float64(val2),
+				)
+			}
+		}()
 	}
 
 	mappedNameservers := resolveNameservers(nameservers, numWorkers)
@@ -142,6 +172,9 @@ func main() {
 		fmt.Printf("[~] Querying domains against nameservers\n")
 	}
 
+	atomic.StoreInt32(&progress, int32(0))
+	atomic.StoreInt32(&total, int32(sampleSize))
+
 	type wrappedAnswer struct {
 		nsIP   string
 		domain string
@@ -149,11 +182,15 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
-	pendingQueries := make(chan string, numWorkers)      // Input
-	queryAnswers := make(chan wrappedAnswer, numWorkers) // Output
+	var wg2 sync.WaitGroup
+
+	pendingQueries := make(chan string)      // Input
+	queryAnswers := make(chan wrappedAnswer) // Output
 
 	// Show results as they arrive
+	wg2.Add(1)
 	go func() {
+		defer wg2.Done()
 		for result := range queryAnswers {
 			domain := result.domain
 			nsIP := result.nsIP
@@ -176,7 +213,7 @@ func main() {
 	}()
 
 	// Launch workers that run queries
-	for i := 1; i <= numWorkers; i++ {
+	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 
 		go func() {
@@ -191,7 +228,12 @@ func main() {
 				domain, nsIP := parts[0], parts[1]
 
 				resp, err := queryDNS(domain, nsIP+":53")
+				atomic.AddInt32(&progress, int32(1))
+
 				if err != nil {
+					if verboseMode {
+						red.Printf(fmt.Sprintf("[-] %s\n", err))
+					}
 					continue
 				}
 
@@ -215,8 +257,12 @@ func main() {
 			pendingQueries <- query
 		}
 	}
+
 	close(pendingQueries)
 
 	wg.Wait()
+
 	close(queryAnswers)
+
+	wg2.Wait()
 }

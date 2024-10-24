@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 )
 
 func resolveNameserver(ns string) (string, error) {
@@ -27,10 +28,15 @@ func worker(id int, jobs <-chan string, results chan<- map[string]string, wg *sy
 		} else {
 			results <- map[string]string{ns: ip}
 		}
+
+		atomic.AddInt32(&progress, int32(1))
 	}
 }
 
 func resolveNameservers(nameservers []string, numWorkers int) map[string]string {
+	atomic.StoreInt32(&progress, int32(0))
+	atomic.StoreInt32(&total, int32(len(nameservers)))
+
 	resultsMap := make(map[string]string)
 
 	jobs := make(chan string, len(nameservers))
