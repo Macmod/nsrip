@@ -20,6 +20,7 @@ Usage of ./nsrip:
   -d, --domain string        Specify the target domain
   -l, --list string          Specify a file with a list of target domains
   -n, --nameservers string   Specify the nameserver list to use (aws, azure, gcp, cloud, or the path to a custom file) (default "cloud")
+  -o, --output string        Output file where to save results
   -q, --quiet                Only output raw results
   -v, --verbose              Verbose mode
   -w, --workers int          Specify the number of workers (default 10)
