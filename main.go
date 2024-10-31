@@ -63,6 +63,7 @@ func main() {
 	var nameservers []string
 	var quietMode bool
 	var verboseMode bool
+	var outputFile string
 
 	green := color.New(color.FgGreen)
 	yellow := color.New(color.FgYellow)
@@ -74,6 +75,7 @@ func main() {
 	pflag.IntVarP(&numWorkers, "workers", "w", 10, "Specify the number of workers")
 	pflag.BoolVarP(&quietMode, "quiet", "q", false, "Only output raw results")
 	pflag.BoolVarP(&verboseMode, "verbose", "v", false, "Verbose mode")
+	pflag.StringVarP(&outputFile, "output", "o", "", "Output file where to save results")
 
 	pflag.Parse()
 
@@ -145,26 +147,24 @@ func main() {
 		fmt.Printf("[~] Press enter at any time to check the progress\n")
 	}
 
-	if !quietMode {
-		go func() {
-			reader := bufio.NewReader(os.Stdin)
+	go func() {
+		reader := bufio.NewReader(os.Stdin)
 
-			for {
-				_, err := reader.ReadString('\n')
-				if err != nil {
-					continue
-				}
-
-				val1 := atomic.LoadInt32(&progress)
-				val2 := atomic.LoadInt32(&total)
-				fmt.Printf(
-					"[~] Progress: %d/%d (%.2f%%)\n",
-					val1, val2,
-					float64(val1)*100/float64(val2),
-				)
+		for {
+			_, err := reader.ReadString('\n')
+			if err != nil {
+				continue
 			}
-		}()
-	}
+
+			val1 := atomic.LoadInt32(&progress)
+			val2 := atomic.LoadInt32(&total)
+			log.Printf(
+				"[~] Progress: %d/%d (%.2f%%)\n",
+				val1, val2,
+				float64(val1)*100/float64(val2),
+			)
+		}
+	}()
 
 	mappedNameservers := resolveNameservers(nameservers, numWorkers)
 
@@ -187,11 +187,22 @@ func main() {
 	pendingQueries := make(chan string)      // Input
 	queryAnswers := make(chan wrappedAnswer) // Output
 
+	var fHandle *os.File
+	var err error
+	if outputFile != "" {
+		fHandle, err = os.OpenFile(outputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+		if err != nil {
+			log.Fatalf("[-] Could not create output file: %s", err)
+		}
+	}
+
 	// Show results as they arrive
 	wg2.Add(1)
 	go func() {
 		defer wg2.Done()
 		for result := range queryAnswers {
+			var outputStr string
+
 			domain := result.domain
 			nsIP := result.nsIP
 			nsName := mappedNameservers[nsIP]
@@ -199,13 +210,29 @@ func main() {
 			if len(resp.Answer) > 0 {
 				for _, answer := range resp.Answer {
 					if aRecord, ok := answer.(*dns.A); ok {
-						green.Printf("[%s (%s)] %s => %s\n", nsName, nsIP, domain, aRecord.A)
+						outputStr = fmt.Sprintf("[%s (%s)] %s => %s\n", nsName, nsIP, domain, aRecord.A)
+						if fHandle != nil {
+							fmt.Fprintf(fHandle, outputStr)
+						}
+						green.Printf(outputStr)
 					} else if cnameRecord, ok := answer.(*dns.CNAME); ok {
-						green.Printf("[%s (%s)] %s => %s\n", nsName, nsIP, domain, cnameRecord.Target)
+						outputStr = fmt.Sprintf("[%s (%s)] %s => %s\n", nsName, nsIP, domain, cnameRecord.Target)
+						if fHandle != nil {
+							fmt.Fprintf(fHandle, outputStr)
+						}
+						green.Printf(outputStr)
 					} else if aaaaRecord, ok := answer.(*dns.AAAA); ok {
-						green.Printf("[%s (%s)] %s => %s\n", nsName, nsIP, domain, aaaaRecord.AAAA)
+						outputStr = fmt.Sprintf("[%s (%s)] %s => %s\n", nsName, nsIP, domain, aaaaRecord.AAAA)
+						if fHandle != nil {
+							fmt.Fprintf(fHandle, outputStr)
+						}
+						green.Printf(outputStr)
 					} else {
-						yellow.Printf("[%s (%s)] %s\n", nsName, nsIP, domain, answer)
+						outputStr = fmt.Sprintf("[%s (%s)] %s\n", nsName, nsIP, domain, answer)
+						if fHandle != nil {
+							fmt.Fprintf(fHandle, outputStr)
+						}
+						yellow.Printf(outputStr)
 					}
 				}
 			}
